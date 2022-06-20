@@ -12,13 +12,17 @@ public class RateLimitingMiddleware
 {
     private readonly RequestDelegate _next;
     private readonly IDistributedCache _cache;
-    private readonly DefaultRateLimit _defaultRateLimit;
+    private readonly Settings _settings;
+    private IPAddress[]? _ipWhiteList;
+    private string[]? _clientWhiteList;
 
-    public RateLimitingMiddleware(RequestDelegate next, IDistributedCache cache, IOptions<Settings> options)
+    public RateLimitingMiddleware(RequestDelegate next, IDistributedCache cache, IOptions<Settings> settings)
     {
         _next = next;
         _cache = cache;
-        _defaultRateLimit = options.Value.DefaultRateLimit;
+        _settings = settings.Value;
+        _ipWhiteList = settings.Value.IpWhitelist?.Select(IPAddress.Parse).ToArray();
+        _clientWhiteList = settings.Value.ClientWhitelist?.ToArray();
     }
     
     public async Task InvokeAsync(HttpContext context)
@@ -31,21 +35,51 @@ public class RateLimitingMiddleware
             return;
         }
         
-        var timeWindow = rateLimit.TimeWindow == default ? _defaultRateLimit.TimeWindow : rateLimit.TimeWindow;
-        var maxRequests = rateLimit.MaxRequests == default ? _defaultRateLimit.MaxRequests : rateLimit.MaxRequests;
+        // ClientWhiteList
+        var clientId = context.Request.Headers["ClientId"].ToString();
+        if(!string.IsNullOrEmpty(clientId) && (_clientWhiteList?.Contains(clientId, StringComparer.InvariantCultureIgnoreCase) ?? false))
+        {
+            await _next(context);
+            return;
+        }
+
+        int? timeWindow = null; 
+        int? maxRequests = null; 
+        
+        // IpWhitelist
+        var clientIp = context.Connection.RemoteIpAddress;
+        if(clientIp is not null)
+        {
+            if(_ipWhiteList != null && _ipWhiteList.Contains(clientIp))
+            {
+                await _next(context);
+                return;
+            }
+
+            var individualLimits = _settings.IndividualLimits?.FirstOrDefault(p => clientIp.Equals(IPAddress.Parse(p.Ip)));
+            if(individualLimits is not null)
+            {
+                timeWindow = individualLimits.RateLimit.TimeWindow;
+                maxRequests = individualLimits.RateLimit.MaxRequests;
+            }
+        }
+
+        // Индивидуальные настройки для данного IP не заданы
+        timeWindow ??= rateLimit.TimeWindow == default ? _settings.DefaultRateLimit.TimeWindow : rateLimit.TimeWindow;
+        maxRequests ??= rateLimit.MaxRequests == default ? _settings.DefaultRateLimit.MaxRequests : rateLimit.MaxRequests;
         
         var key = GenerateClientKey(context);
         var clientStatistics = await GetClientStatisticsByKey(key);
         
         if (clientStatistics is not null 
-         && DateTime.UtcNow < clientStatistics.LastSuccessfulResponseTime.AddSeconds(timeWindow)
-         && clientStatistics.NumberOfRequestsCompletedSuccessfully == maxRequests)
+         && DateTime.UtcNow < clientStatistics.LastSuccessfulResponseTime.AddSeconds(timeWindow.Value)
+         && clientStatistics.NumberOfRequestsCompletedSuccessfully == maxRequests.Value)
         {
             context.Response.StatusCode = (int)HttpStatusCode.TooManyRequests;
             return;
         }
         
-        await UpdateClientStatisticsStorage(key, maxRequests);
+        await UpdateClientStatisticsStorage(key, maxRequests.Value);
         await _next(context);
     }
 
