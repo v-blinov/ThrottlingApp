@@ -71,11 +71,16 @@ public class RateLimitingMiddleware
         var key = GenerateClientKey(context);
         var clientStatistics = await GetClientStatisticsByKey(key);
         
+        var dtLimitReset = clientStatistics?.LastSuccessfulResponseTime.AddSeconds(timeWindow.Value);
         if (clientStatistics is not null 
-         && DateTime.UtcNow < clientStatistics.LastSuccessfulResponseTime.AddSeconds(timeWindow.Value)
-         && clientStatistics.NumberOfRequestsCompletedSuccessfully == maxRequests.Value)
+         && DateTime.UtcNow < dtLimitReset
+         && clientStatistics.NumberOfRequestsCompletedSuccessfully >= maxRequests.Value)
         {
             context.Response.StatusCode = (int)HttpStatusCode.TooManyRequests;
+            context.Response.Headers.Add("x-rate-limit-limit", timeWindow.Value.ToString());
+            context.Response.Headers.Add("x-rate-limit-remaining", maxRequests.Value.ToString());
+            context.Response.Headers.Add("x-rate-limit-reset", dtLimitReset.ToString());
+            
             return;
         }
         
