@@ -1,8 +1,10 @@
+using Basic.Extensions;
+
 var builder = WebApplication.CreateBuilder(args);
 
-//services
-
 builder.Services.AddControllers();
+
+builder.Services.AddDistributedMemoryCache();
 
 builder.Services.AddSwaggerGen();
 
@@ -15,10 +17,9 @@ app.UseSwaggerUI(options =>
     options.RoutePrefix = string.Empty;
 });
 
-app.UseRouting();
-app.UseEndpoints(routeBuilder =>
-{
-    routeBuilder.MapControllers();
-});
+// needs after app.UseRouting(); if that exists
+app.UseRateLimiting();
+
+app.MapControllers();
 
 app.Run();
