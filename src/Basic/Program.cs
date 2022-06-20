@@ -1,6 +1,9 @@
 using Basic.Extensions;
+using Basic.Optional;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.Configure<Settings>(builder.Configuration.GetSection("Settings"));
 
 builder.Services.AddControllers();
 

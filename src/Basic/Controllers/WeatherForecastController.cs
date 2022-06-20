@@ -31,7 +31,7 @@ public class WeatherForecastController : Controller
     }
     
     [HttpGet("get2")]
-    [LimitRequests(MaxRequests = 2, TimeWindow = 5)]
+    [LimitRequests]
     public ActionResult<IEnumerable<WeatherForecast>> Get2()
     {
         return Ok(Enumerable.Range(1, 5)
@@ -45,7 +45,7 @@ public class WeatherForecastController : Controller
     }
     
     [HttpGet("get3")]
-    [LimitRequests(MaxRequests = 2, TimeWindow = 5)]
+    [LimitRequests(MaxRequests = 2)]
     public ActionResult<IEnumerable<WeatherForecast>> Get3()
     {
         return Ok(Enumerable.Range(1, 5)

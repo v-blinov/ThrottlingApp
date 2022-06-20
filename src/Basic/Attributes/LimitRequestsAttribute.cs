@@ -3,6 +3,18 @@
 [AttributeUsage(AttributeTargets.Method)]
 public class LimitRequestsAttribute : Attribute
 {
-    public int TimeWindow { get; set; }
-    public int MaxRequests { get; set; }
+    private int _timeWindow;
+    private int _maxRequests;
+    
+    public int TimeWindow
+    {
+        get => _timeWindow;
+        set => _timeWindow = value >= 1 ? value : 1;
+    }
+    
+    public int MaxRequests
+    {
+        get => _maxRequests;
+        set => _maxRequests = value >= 1 ? value : 1;
+    }
 }
