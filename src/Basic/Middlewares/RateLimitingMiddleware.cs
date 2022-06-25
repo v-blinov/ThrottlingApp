@@ -20,8 +20,6 @@ public class RateLimitingMiddleware
 
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> Semaphores = new();
 
-    private readonly object _locker =new();
-
     public RateLimitingMiddleware(ILogger<RateLimitingMiddleware> logger, RequestDelegate next, IDistributedCache cache, IOptions<Settings> settings)
     {
         _logger = logger;
@@ -77,15 +75,7 @@ public class RateLimitingMiddleware
         
         var key = GenerateClientKey(context);
 
-        SemaphoreSlim semaphoreSlim;
-        lock(_locker)
-        {
-            if(!Semaphores.TryGetValue(key, out semaphoreSlim))
-            {
-                semaphoreSlim = new SemaphoreSlim(maxRequests.Value, maxRequests.Value);
-                Semaphores.TryAdd(key, semaphoreSlim);
-            }
-        }
+        var semaphoreSlim = Semaphores.GetOrAdd(key, new SemaphoreSlim(maxRequests.Value, maxRequests.Value));
         
         await semaphoreSlim.WaitAsync();
 
