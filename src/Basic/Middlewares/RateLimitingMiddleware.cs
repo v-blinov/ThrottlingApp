@@ -13,8 +13,10 @@ public class RateLimitingMiddleware
     private readonly RequestDelegate _next;
     private readonly IDistributedCache _cache;
     private readonly Settings _settings;
-    private IPAddress[]? _ipWhiteList;
-    private string[]? _clientWhiteList;
+    private readonly IPAddress[]? _ipWhiteList;
+    private readonly string[]? _clientWhiteList;
+
+    private readonly object _locker =new();
 
     public RateLimitingMiddleware(RequestDelegate next, IDistributedCache cache, IOptions<Settings> settings)
     {
@@ -69,22 +71,24 @@ public class RateLimitingMiddleware
         maxRequests ??= rateLimit.MaxRequests == default ? _settings.DefaultRateLimit.MaxRequests : rateLimit.MaxRequests;
         
         var key = GenerateClientKey(context);
-        var clientStatistics = await GetClientStatisticsByKey(key);
-        
-        var dtLimitReset = clientStatistics?.LastSuccessfulResponseTime.AddSeconds(timeWindow.Value);
-        if (clientStatistics is not null 
-         && DateTime.UtcNow < dtLimitReset
-         && clientStatistics.NumberOfRequestsCompletedSuccessfully >= maxRequests.Value)
+
+        lock(_locker)
         {
-            context.Response.StatusCode = (int)HttpStatusCode.TooManyRequests;
-            context.Response.Headers.Add("x-rate-limit-limit", timeWindow.Value.ToString());
-            context.Response.Headers.Add("x-rate-limit-remaining", maxRequests.Value.ToString());
-            context.Response.Headers.Add("x-rate-limit-reset", dtLimitReset.ToString());
-            
-            return;
+            var clientStatistics = GetClientStatisticsByKey(key).GetAwaiter().GetResult();
+
+            var dtLimitReset = clientStatistics?.LastSuccessfulResponseTime.AddSeconds(timeWindow.Value);
+            if(clientStatistics is not null && DateTime.UtcNow < dtLimitReset && clientStatistics.NumberOfRequestsCompletedSuccessfully >= maxRequests.Value)
+            {
+                context.Response.StatusCode = (int)HttpStatusCode.TooManyRequests;
+                context.Response.Headers.Add("x-rate-limit-limit", timeWindow.Value.ToString());
+                context.Response.Headers.Add("x-rate-limit-remaining", maxRequests.Value.ToString());
+                context.Response.Headers.Add("x-rate-limit-reset", dtLimitReset.ToString());
+                return;
+            }
+
+            UpdateClientStatisticsStorage(key, maxRequests.Value).GetAwaiter().GetResult();
         }
-        
-        await UpdateClientStatisticsStorage(key, maxRequests.Value);
+
         await _next(context);
     }
 
