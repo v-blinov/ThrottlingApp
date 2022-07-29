@@ -1,4 +1,5 @@
-﻿using System.Net;
+﻿using System.Collections.Concurrent;
+using System.Net;
 using Basic.Attributes;
 using Basic.Extensions;
 using Basic.Models;
@@ -10,14 +11,18 @@ namespace Basic.Middlewares;
 
 public class RateLimitingMiddleware
 {
+    private readonly ILogger<RateLimitingMiddleware> _logger;
     private readonly RequestDelegate _next;
     private readonly IDistributedCache _cache;
     private readonly Settings _settings;
-    private IPAddress[]? _ipWhiteList;
-    private string[]? _clientWhiteList;
+    private readonly IPAddress[]? _ipWhiteList;
+    private readonly string[]? _clientWhiteList;
 
-    public RateLimitingMiddleware(RequestDelegate next, IDistributedCache cache, IOptions<Settings> settings)
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> Semaphores = new();
+
+    public RateLimitingMiddleware(ILogger<RateLimitingMiddleware> logger, RequestDelegate next, IDistributedCache cache, IOptions<Settings> settings)
     {
+        _logger = logger;
         _next = next;
         _cache = cache;
         _settings = settings.Value;
@@ -69,23 +74,34 @@ public class RateLimitingMiddleware
         maxRequests ??= rateLimit.MaxRequests == default ? _settings.DefaultRateLimit.MaxRequests : rateLimit.MaxRequests;
         
         var key = GenerateClientKey(context);
-        var clientStatistics = await GetClientStatisticsByKey(key);
+
+        var semaphoreSlim = Semaphores.GetOrAdd(key, new SemaphoreSlim(maxRequests.Value, maxRequests.Value));
         
-        var dtLimitReset = clientStatistics?.LastSuccessfulResponseTime.AddSeconds(timeWindow.Value);
-        if (clientStatistics is not null 
-         && DateTime.UtcNow < dtLimitReset
-         && clientStatistics.NumberOfRequestsCompletedSuccessfully >= maxRequests.Value)
+        await semaphoreSlim.WaitAsync();
+
+        try
         {
-            context.Response.StatusCode = (int)HttpStatusCode.TooManyRequests;
-            context.Response.Headers.Add("x-rate-limit-limit", timeWindow.Value.ToString());
-            context.Response.Headers.Add("x-rate-limit-remaining", maxRequests.Value.ToString());
-            context.Response.Headers.Add("x-rate-limit-reset", dtLimitReset.ToString());
-            
-            return;
+            _logger.LogInformation("Enter to semaphoresection");
+
+            var clientStatistics = await GetClientStatisticsByKey(key);
+
+            var dtLimitReset = clientStatistics?.LastSuccessfulResponseTime.AddSeconds(timeWindow.Value);
+            if(DateTime.UtcNow < dtLimitReset && clientStatistics?.NumberOfRequestsCompletedSuccessfully >= maxRequests.Value)
+            {
+                context.Response.StatusCode = (int)HttpStatusCode.TooManyRequests;
+                context.Response.Headers.Add("x-rate-limit-limit", timeWindow.Value.ToString());
+                context.Response.Headers.Add("x-rate-limit-remaining", maxRequests.Value.ToString());
+                context.Response.Headers.Add("x-rate-limit-reset", dtLimitReset.ToString());
+                return;
+            }
+
+            UpdateClientStatisticsStorage(key, maxRequests.Value).GetAwaiter().GetResult();
+            await _next(context);
         }
-        
-        await UpdateClientStatisticsStorage(key, maxRequests.Value);
-        await _next(context);
+        finally
+        {
+            semaphoreSlim.Release();
+        }
     }
 
     private static string GenerateClientKey(HttpContext context) 
